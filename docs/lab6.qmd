@@ -1,0 +1,399 @@
+---
+title: "lab6"
+format: html
+---
+## Load necessary libaries 
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(powerjoin)
+library(glue)
+library(vip)
+library(baguette)
+library(xgboost)
+```
+
+## Load data 
+```{r}
+root <- 'https://gdex.ucar.edu/dataset/camels/file'
+```
+
+## Getting the documentation PDF
+```{r}
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 'data/camels_attributes_v2.0.pdf')
+```
+
+## Getting Basin characteristics 
+```{r}
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+
+# Where the files live online ...
+remote_files  <- glue('{root}/camels_{types}.txt')
+# Where we want to download the data
+local_files   <- glue('data/camels_{types}.txt')
+
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+
+# Read and merge data
+camels <- map(local_files, read_delim, show_col_types = FALSE) 
+
+camels <- power_full_join(camels ,by = 'gauge_id')
+```
+
+# Question 1
+### What does zero_q_freq represent? 
+#### zero_q_freq represents the frequency of days with Q = 0 mm/day
+
+## Exploratory Data Analysis 
+```{r}
+# Map of sites colored by mean flow (q_mean)
+ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+  geom_point(aes(color = q_mean)) +
+  scale_color_gradient(low = "pink", high = "dodgerblue") +
+  ggthemes::theme_map()
+```
+
+# Question 2
+## Map of the sites, coloring the points by the aridty and p_mean column 
+```{r}
+# Map 1: Sites colored by Aridity 
+aridity_map <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+  geom_point(aes(color = aridity)) +
+  scale_color_gradient(low = "lightyellow", high = "brown") +
+  ggthemes::theme_map() +
+  labs(title = "Map of Sites Colored by Aridity",
+       x = "Longitude",
+       y = "Latitude",
+       color = "Aridity Index")
+
+# Map 2: Sites colored by Mean Precipitation (p_mean)
+p_mean_map <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+  geom_point(aes(color = p_mean)) +
+  scale_color_gradient(low = "dodgerblue", high = "darkblue") +
+  ggthemes::theme_map() +
+  labs(title = "Map of Sites Colored by Mean Precipitation (p_mean)",
+       x = "Longitude",
+       y = "Latitude",
+       color = "Mean Precipitation")
+
+# Combine the two maps into a single visualization using patchwork
+combined_map <- aridity_map + p_mean_map
+
+print(combined_map)
+```
+
+## Model Preparation
+```{r}
+camels |> 
+  select(aridity, p_mean, q_mean) |> 
+  drop_na() |> 
+  cor()
+```
+
+## Visual EDA
+```{r}
+# Create a scatter plot of aridity vs rainfall
+ggplot(camels, aes(x = aridity, y = p_mean)) +
+  # Add points colored by mean flow
+  geom_point(aes(color = q_mean)) +
+  # Add a linear regression line
+  geom_smooth(method = "lm", color = "red", linetype = 2) +
+  # Apply the viridis color scale
+  scale_color_viridis_c() +
+  # Add a title, axis labels, and theme (w/ legend on the bottom)
+  theme_linedraw() + 
+  theme(legend.position = "bottom") + 
+  labs(title = "Aridity vs Rainfall vs Runnoff", 
+       x = "Aridity", 
+       y = "Rainfall",
+       color = "Mean Flow")
+```
+
+```{r}
+ggplot(camels, aes(x = aridity, y = p_mean)) +
+  geom_point(aes(color = q_mean)) +
+  geom_smooth(method = "lm") +
+  scale_color_viridis_c() +
+  # Apply log transformations to the x and y axes
+  scale_x_log10() + 
+  scale_y_log10() +
+  theme_linedraw() +
+  theme(legend.position = "bottom") + 
+  labs(title = "Aridity vs Rainfall vs Runnoff", 
+       x = "Aridity", 
+       y = "Rainfall",
+       color = "Mean Flow")
+```
+
+```{r}
+ggplot(camels, aes(x = aridity, y = p_mean)) +
+  geom_point(aes(color = q_mean)) +
+  geom_smooth(method = "lm") +
+  # Apply a log transformation to the color scale
+  scale_color_viridis_c(trans = "log") +
+  scale_x_log10() + 
+  scale_y_log10() +
+  theme_linedraw() +
+  theme(legend.position = "bottom",
+        # Expand the legend width ...
+        legend.key.width = unit(2.5, "cm"),
+        legend.key.height = unit(.5, "cm")) + 
+  labs(title = "Aridity vs Rainfall vs Runnoff", 
+       x = "Aridity", 
+       y = "Rainfall",
+       color = "Mean Flow") 
+```
+
+## Model Building
+```{r}
+# Splitting the Data 
+set.seed(123)
+# Bad form to perform simple transformations on the outcome variable within a 
+# recipe. So, we'll do it here.
+camels <- camels |> 
+  mutate(logQmean = log(q_mean))
+
+# Generate the split
+camels_split <- initial_split(camels, prop = 0.8)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+
+camels_cv <- vfold_cv(camels_train, v = 10)
+
+# Creating Recipe 
+# Create a recipe to preprocess the data
+rec <-  recipe(logQmean ~ aridity + p_mean, data = camels_train) %>%
+  # Log transform the predictor variables (aridity and p_mean)
+  step_log(all_predictors()) %>%
+  # Add an interaction term between aridity and p_mean
+  step_interact(terms = ~ aridity:p_mean) |> 
+  # Drop any rows with missing values in the pred
+  step_naomit(all_predictors(), all_outcomes())
+
+# Naive base lm approach
+# Prepare the data
+baked_data <- prep(rec, camels_train) |> 
+  bake(new_data = NULL)
+
+# Interaction with lm
+#  Base lm sets interaction terms with the * symbol
+lm_base <- lm(logQmean ~ aridity * p_mean, data = baked_data)
+summary(lm_base)
+```
+```{r}
+# Sanity Interaction term from recipe ... these should be equal!!
+summary(lm(logQmean ~ aridity + p_mean + aridity_x_p_mean, data = baked_data))
+```
+```{r}
+test_data <-  bake(prep(rec), new_data = camels_test)
+test_data$lm_pred <- predict(lm_base, newdata = test_data)
+```
+
+## Model Evaluation: statistical and visual
+```{r}
+metrics(test_data, truth = logQmean, estimate = lm_pred)
+```
+
+```{r}
+ggplot(test_data, aes(x = logQmean, y = lm_pred, colour = aridity)) +
+  # Apply a gradient color scale
+  scale_color_gradient2(low = "brown", mid = "orange", high = "darkgreen") +
+  geom_point() +
+  geom_abline(linetype = 2) +
+  theme_linedraw() + 
+  labs(title = "Linear Model: Observed vs Predicted",
+       x = "Observed Log Mean Flow",
+       y = "Predicted Log Mean Flow",
+       color = "Aridity")
+```
+## Using workflow instead 
+```{r}
+# Define model
+lm_model <- linear_reg() %>%
+  # define the engine
+  set_engine("lm") %>%
+  # define the mode
+  set_mode("regression")
+
+# Instantiate a workflow ...
+lm_wf <- workflow() %>%
+  # Add the recipe
+  add_recipe(rec) %>%
+  # Add the model
+  add_model(lm_model) %>%
+  # Fit the model to the training data
+  fit(data = camels_train) 
+
+# Extract the model coefficients from the workflow
+summary(extract_fit_engine(lm_wf))$coefficients
+```
+```{r}
+# From the base implementation
+summary(lm_base)$coefficients
+```
+```{r}
+# Making predictions
+lm_data <- augment(lm_wf, new_data = camels_test)
+dim(lm_data)
+```
+
+### Model Evaluation
+```{r}
+metrics(lm_data, truth = logQmean, estimate = .pred)
+```
+```{r}
+ggplot(lm_data, aes(x = logQmean, y = .pred, colour = aridity)) +
+  scale_color_viridis_c() +
+  geom_point() +
+  geom_abline() +
+  theme_linedraw()
+```
+
+## Switch it up
+```{r}
+library(baguette)
+rf_model <- rand_forest() %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+rf_wf <- workflow() %>%
+  # Add the recipe
+  add_recipe(rec) %>%
+  # Add the model
+  add_model(rf_model) %>%
+  # Fit the model
+  fit(data = camels_train) 
+```
+
+### Predictions
+```{r}
+rf_data <- augment(rf_wf, new_data = camels_test)
+dim(rf_data)
+```
+
+## Model Evaluation: statistical and visual 
+```{r}
+metrics(rf_data, truth = logQmean, estimate = .pred)
+```
+```{r}
+ggplot(rf_data, aes(x = logQmean, y = .pred, colour = aridity)) +
+  scale_color_viridis_c() +
+  geom_point() +
+  geom_abline() +
+  theme_linedraw()
+```
+
+## A workflow approach
+```{r}
+wf <- workflow_set(list(rec), list(lm_model, rf_model)) %>%
+  workflow_map('fit_resamples', resamples = camels_cv) 
+
+autoplot(wf)
+```
+```{r}
+rank_results(wf, rank_metric = "rsq", select_best = TRUE)
+```
+
+# Question 3
+```{r}
+# XGBoost Model
+xgb_model <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# Neural Network Model
+nn_model <- bag_mlp() %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+# Update the workflow to include the XGBoost and Neural Network models
+wf_updated <- workflow_set(
+  list(rec), 
+  list(lm_model, rf_model, xgb_model, nn_model)
+) %>%
+  workflow_map('fit_resamples', resamples = camels_cv)
+
+# View the workflow map
+autoplot(wf_updated)
+
+```
+```{r}
+# Model Evaluation: Statistical Metrics
+eval_metrics <- collect_metrics(wf_updated)
+
+print(eval_metrics)
+```
+```{r}
+# Rank the results based on R-squared
+rank_results(wf_updated, rank_metric = "rsq", select_best = TRUE)
+```
+### Which of the 4 models would you move foward with?
+#### Neural Network model 
+
+# Build your own 
+## Data Splitting 
+```{r}
+# Set a seed for reproducibility
+set.seed(123)
+
+# Splitting the data into training (75%) and testing (25%)
+camels_split <- initial_split(camels, prop = 0.75)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+
+# Create a 10-fold cross-validation
+camels_cv <- vfold_cv(camels_train, v = 10)
+```
+
+## Recipe 
+```{r}
+# Define formula for prediction (logQmean as target)
+formula <- logQmean ~ aridity + p_mean  # Choose appropriate predictors from your data
+
+# Define the recipe
+rec <- recipe(formula, data = camels_train) %>%
+  step_log(all_outcomes()) %>%  # Apply log transformation to the dependent variable
+  step_normalize(all_predictors()) %>%  # Normalize predictors
+  step_interact(terms = ~ aridity:p_mean)  # Interaction term between aridity and p_mean
+```
+
+## Define 3 Models
+```{r}
+# Random Forest model
+rf_model <- rand_forest(mtry = 3, min_n = 5, trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+# Linear regression model
+lm_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+# Support vector machine model
+svm_model <- svm_rbf() %>%
+  set_engine("kernlab") %>%
+  set_mode("regression")
+```
+
+## Workflow set ()
+```{r}
+# Create a workflow set object with models and recipe
+workflow_set_obj <- workflow_set(
+  preproc = list(rec),
+  models = list(rf_model, lm_model, svm_model)
+)
+
+# Fit the models to the resamples (cross-validation splits)
+wf_results <- workflow_map(
+  workflow_set_obj,
+  resamples = camels_cv,
+  metrics = metric_set(rmse, rsq)
+)
+```
+
+
+
+

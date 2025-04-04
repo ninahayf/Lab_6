@@ -1,0 +1,10 @@
+---
+project:
+  title: "ESS 330 Project Proposal"
+  output-dir: docs
+  type: website
+format:
+  html:
+    self-contained: true
+---
+

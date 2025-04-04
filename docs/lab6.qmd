@@ -11,6 +11,7 @@ library(glue)
 library(vip)
 library(baguette)
 library(xgboost)
+library(patchwork)
 ```
 
 ## Load data 
@@ -346,54 +347,128 @@ camels_test  <- testing(camels_split)
 
 # Create a 10-fold cross-validation
 camels_cv <- vfold_cv(camels_train, v = 10)
+
+# Check the data 
+glimpse(camels_train)
+glimpse(camels_test)
 ```
 
 ## Recipe 
 ```{r}
-# Define formula for prediction (logQmean as target)
-formula <- logQmean ~ aridity + p_mean  # Choose appropriate predictors from your data
+# Load necessary libraries
+library(recipes)
 
-# Define the recipe
-rec <- recipe(formula, data = camels_train) %>%
-  step_log(all_outcomes()) %>%  # Apply log transformation to the dependent variable
-  step_normalize(all_predictors()) %>%  # Normalize predictors
-  step_interact(terms = ~ aridity:p_mean)  # Interaction term between aridity and p_mean
+# Define the formula for prediction
+# We'll predict logQmean using relevant features (adjust as needed)
+formula <- logQmean ~ p_mean + pet_mean + aridity + frac_snow + soil_depth_pelletier + frac_forest + elev_mean + slope_mean + geol_1st_class + dom_land_cover
+
+# Build the recipe for preprocessing
+# We'll handle missing values, scale continuous variables, and dummy-code categorical ones
+camels_recipe <- recipe(formula, data = camels_train) %>%
+  step_naomit(all_predictors()) %>%  # Remove missing values
+  step_normalize(all_numeric_predictors()) %>%  # Scale numeric predictors
+  step_dummy(all_nominal_predictors())  # One-hot encode categorical predictors
+
+
+# Preview the recipe
+camels_recipe
 ```
 
 ## Define 3 Models
 ```{r}
-# Random Forest model
-rf_model <- rand_forest(mtry = 3, min_n = 5, trees = 500) %>%
+# Load necessary libraries
+library(parsnip)
+
+# Define a Random Forest model
+rf_model <- rand_forest(mtry = 5, trees = 500, min_n = 5) %>%
   set_engine("ranger") %>%
   set_mode("regression")
 
-# Linear regression model
+# Define a Linear Regression model
 lm_model <- linear_reg() %>%
   set_engine("lm") %>%
   set_mode("regression")
 
-# Support vector machine model
+# Define a Support Vector Machine (SVM) model
 svm_model <- svm_rbf() %>%
   set_engine("kernlab") %>%
   set_mode("regression")
+
+# Check the models
+rf_model
+lm_model
+svm_model
 ```
 
 ## Workflow set ()
 ```{r}
-# Create a workflow set object with models and recipe
-workflow_set_obj <- workflow_set(
-  preproc = list(rec),
-  models = list(rf_model, lm_model, svm_model)
-)
+# Load necessary libraries
+library(workflows)
+library(tune)
+library(dials)
 
-# Fit the models to the resamples (cross-validation splits)
-wf_results <- workflow_map(
-  workflow_set_obj,
-  resamples = camels_cv,
-  metrics = metric_set(rmse, rsq)
-)
+# Create a list of workflows (each model will have its own workflow)
+rf_workflow <- workflow() %>%
+  add_recipe(camels_recipe) %>%
+  add_model(rf_model)
+
+lm_workflow <- workflow() %>%
+  add_recipe(camels_recipe) %>%
+  add_model(lm_model)
+
+svm_workflow <- workflow() %>%
+  add_recipe(camels_recipe) %>%
+  add_model(svm_model)
+
+# List of workflows
+workflows_list <- list(rf = rf_workflow, lm = lm_workflow, svm = svm_workflow)
+
+# Fit each workflow to the resamples (cross-validation folds)
+cv_results <- lapply(workflows_list, function(wf) {
+  fit_resamples(
+    wf,
+    resamples = camels_cv,
+    metrics = metric_set(rmse, rsq),
+    control = control_resamples(save_pred = TRUE)
+  )
+})
+
 ```
 
+## Evaluation
+### The support vector machine (svm) model is the best one because it has the highest r-squared value of 0.9125
+```{r}
+# Collect metrics and combine them into one data frame
+cv_results_df <- bind_rows(lapply(cv_results, collect_metrics), .id = "model")
 
+# Rank the results based on R-squared
+ranked_results <- cv_results_df %>%
+  filter(.metric == "rsq") %>%
+  arrange(desc(mean))
 
+# Print the ranked results
+print(ranked_results)
+```
 
+## Extract and Evaluate
+```{r}
+# Get the SVM workflow from the list of workflows
+svm_workflow <- workflows_list[["svm"]]
+
+# Fit the SVM model on the entire training set
+svm_model_fit <- fit(svm_workflow, data = camels_train)
+
+# Make predictions on the test set
+svm_predictions <- augment(svm_model_fit, new_data = camels_test)
+
+# Plot observed vs predicted values for the SVM model
+ggplot(svm_predictions, aes(x = logQmean, y = .pred)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(
+    title = "Observed vs Predicted: SVM Model",
+    x = "Observed logQmean",
+    y = "Predicted logQmean"
+  ) +
+  theme_minimal()
+```

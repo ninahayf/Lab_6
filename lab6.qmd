@@ -6,7 +6,9 @@ format: html
 execute:
   echo: true
 ---
-## Load necessary libaries 
+
+## Load necessary libaries
+
 ```{r setup, include=FALSE}
 library(tidyverse)
 library(tidymodels)
@@ -18,17 +20,20 @@ library(xgboost)
 library(patchwork)
 ```
 
-## Load data 
+## Load data
+
 ```{r}
 root <- 'https://gdex.ucar.edu/dataset/camels/file'
 ```
 
 ## Getting the documentation PDF
+
 ```{r}
 download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 'data/camels_attributes_v2.0.pdf')
 ```
 
-## Getting Basin characteristics 
+## Getting Basin characteristics
+
 ```{r}
 types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
 
@@ -46,10 +51,13 @@ camels <- power_full_join(camels ,by = 'gauge_id')
 ```
 
 # Question 1
-### What does zero_q_freq represent? 
+
+### What does zero_q_freq represent?
+
 #### zero_q_freq represents the frequency of days with Q = 0 mm/day
 
-## Exploratory Data Analysis 
+## Exploratory Data Analysis
+
 ```{r}
 # Map of sites colored by mean flow (q_mean)
 ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
@@ -60,7 +68,9 @@ ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
 ```
 
 # Question 2
-## Map of the sites, coloring the points by the aridty and p_mean column 
+
+## Map of the sites, coloring the points by the aridty and p_mean column
+
 ```{r}
 # Map 1: Sites colored by Aridity 
 aridity_map <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
@@ -91,6 +101,7 @@ print(combined_map)
 ```
 
 ## Model Preparation
+
 ```{r}
 camels |> 
   select(aridity, p_mean, q_mean) |> 
@@ -99,6 +110,7 @@ camels |>
 ```
 
 ## Visual EDA
+
 ```{r}
 # Create a scatter plot of aridity vs rainfall
 ggplot(camels, aes(x = aridity, y = p_mean)) +
@@ -153,6 +165,7 @@ ggplot(camels, aes(x = aridity, y = p_mean)) +
 ```
 
 ## Model Building
+
 ```{r}
 # Splitting the Data 
 set.seed(123)
@@ -188,16 +201,19 @@ baked_data <- prep(rec, camels_train) |>
 lm_base <- lm(logQmean ~ aridity * p_mean, data = baked_data)
 summary(lm_base)
 ```
+
 ```{r}
 # Sanity Interaction term from recipe ... these should be equal!!
 summary(lm(logQmean ~ aridity + p_mean + aridity_x_p_mean, data = baked_data))
 ```
+
 ```{r}
 test_data <-  bake(prep(rec), new_data = camels_test)
 test_data$lm_pred <- predict(lm_base, newdata = test_data)
 ```
 
 ## Model Evaluation: statistical and visual
+
 ```{r}
 metrics(test_data, truth = logQmean, estimate = lm_pred)
 ```
@@ -214,7 +230,9 @@ ggplot(test_data, aes(x = logQmean, y = lm_pred, colour = aridity)) +
        y = "Predicted Log Mean Flow",
        color = "Aridity")
 ```
-## Using workflow instead 
+
+## Using workflow instead
+
 ```{r}
 # Define model
 lm_model <- linear_reg() %>%
@@ -235,10 +253,12 @@ lm_wf <- workflow() %>%
 # Extract the model coefficients from the workflow
 summary(extract_fit_engine(lm_wf))$coefficients
 ```
+
 ```{r}
 # From the base implementation
 summary(lm_base)$coefficients
 ```
+
 ```{r}
 # Making predictions
 lm_data <- augment(lm_wf, new_data = camels_test)
@@ -246,9 +266,11 @@ dim(lm_data)
 ```
 
 ### Model Evaluation
+
 ```{r}
 metrics(lm_data, truth = logQmean, estimate = .pred)
 ```
+
 ```{r}
 ggplot(lm_data, aes(x = logQmean, y = .pred, colour = aridity)) +
   scale_color_viridis_c() +
@@ -258,6 +280,7 @@ ggplot(lm_data, aes(x = logQmean, y = .pred, colour = aridity)) +
 ```
 
 ## Switch it up
+
 ```{r}
 library(baguette)
 rf_model <- rand_forest() %>%
@@ -274,15 +297,18 @@ rf_wf <- workflow() %>%
 ```
 
 ### Predictions
+
 ```{r}
 rf_data <- augment(rf_wf, new_data = camels_test)
 dim(rf_data)
 ```
 
-## Model Evaluation: statistical and visual 
+## Model Evaluation: statistical and visual
+
 ```{r}
 metrics(rf_data, truth = logQmean, estimate = .pred)
 ```
+
 ```{r}
 ggplot(rf_data, aes(x = logQmean, y = .pred, colour = aridity)) +
   scale_color_viridis_c() +
@@ -292,17 +318,20 @@ ggplot(rf_data, aes(x = logQmean, y = .pred, colour = aridity)) +
 ```
 
 ## A workflow approach
+
 ```{r}
 wf <- workflow_set(list(rec), list(lm_model, rf_model)) %>%
   workflow_map('fit_resamples', resamples = camels_cv) 
 
 autoplot(wf)
 ```
+
 ```{r}
 rank_results(wf, rank_metric = "rsq", select_best = TRUE)
 ```
 
 # Question 3
+
 ```{r}
 # XGBoost Model
 xgb_model <- boost_tree() %>%
@@ -325,21 +354,27 @@ wf_updated <- workflow_set(
 autoplot(wf_updated)
 
 ```
+
 ```{r}
 # Model Evaluation: Statistical Metrics
 eval_metrics <- collect_metrics(wf_updated)
 
 print(eval_metrics)
 ```
+
 ```{r}
 # Rank the results based on R-squared
 rank_results(wf_updated, rank_metric = "rsq", select_best = TRUE)
 ```
-### Which of the 4 models would you move foward with?
-#### Neural Network model 
 
-# Build your own 
-## Data Splitting 
+### Which of the 4 models would you move foward with?
+
+#### Neural Network model
+
+# Build your own
+
+## Data Splitting
+
 ```{r}
 # Set a seed for reproducibility
 set.seed(123)
@@ -357,7 +392,8 @@ glimpse(camels_train)
 glimpse(camels_test)
 ```
 
-## Recipe 
+## Recipe
+
 ```{r}
 # Load necessary libraries
 library(recipes)
@@ -369,6 +405,7 @@ rec <- recipe(logQmean ~ aridity + p_mean, data = camels_train) %>%
 ```
 
 ## Define 3 Models
+
 ```{r}
 # Load necessary libraries
 library(parsnip)
@@ -395,6 +432,7 @@ xgb_model
 ```
 
 ## Workflow set ()
+
 ```{r}
 # Load necessary libraries
 library(workflows)
@@ -409,13 +447,16 @@ wf <- workflow_set(
 ```
 
 ## Evaluation
+
 ### The support vector machine (svm) model is the best one because it has the highest r-squared value of 0.9125
+
 ```{r}
 autoplot(wf)
 rank_results(wf, rank_metric = "rsq", select_best = TRUE)
 ```
 
 ## Extract and Evaluate
+
 ```{r}
 # Select best model based on R-squared
 best_model_id <- rank_results(wf, rank_metric = "rsq") %>% 

@@ -1,7 +1,16 @@
 project:
-  title: "lab-6"
-  output-dir: docs
   type: website
+  output-dir: docs
+
+website: 
+  title: "Lab 6"
+  navbar:
+  left:
+    - href: lab6.html
+      text: Home
+    - href: hyperparameter-tuning.html
+      text: Second Page
+
 format:
   html:
     self-contained: true

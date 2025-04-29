@@ -1,0 +1,142 @@
+---
+title: "hyperparameter-tuning"
+author: "Nina Hayford"
+email: "ninahayf@colostate.edu"
+format: html
+execute: 
+  echo: true
+---
+## Load in libraries 
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(glue)
+library(purrr)
+library(readr)
+library(powerjoin)
+library(rsample)
+library(recipes)
+library(skimr)
+library(visdat)
+library(ggpubr)
+library(patchwork)
+```
+
+## Data Import/Tidy/Transform
+```{r}
+root <- 'https://gdex.ucar.edu/dataset/camels/file'
+
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 'data/camels_attributes_v2.0.pdf')
+```
+```{r}
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+remote_files <- glue('{root}/camels_{types}.txt')
+local_files <- glue('data/camels_{types}.txt')
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+camels <- map(local_files, read_delim, show_col_types = FALSE)
+camels_combined <- reduce(camels, power_full_join, by = 'gauge_id')
+
+# EDA
+skim(camels_combined)
+vis_dat(camels_combined)
+```
+
+## Data Splitting 
+```{r}
+set.seed(123)
+split_data <- initial_split(camels_combined, prop = 0.8)
+train_data <- training(split_data)
+test_data <- testing(split_data)
+
+# Check the size of the training and testing datasets
+dim(train_data)
+dim(test_data)
+```
+
+## Feature Engineering 
+```{r}
+recipe_obj <- recipe(q_mean ~ ., data = train_data) %>%
+  step_rm(gauge_lat, gauge_lon) %>%
+  step_novel(all_nominal(), -all_outcomes()) %>%
+  step_unknown(all_nominal(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+recipe_prepped <- prep(recipe_obj, training = train_data)
+train_data_processed <- bake(recipe_prepped, new_data = train_data)
+test_data_processed <- bake(recipe_prepped, new_data = test_data)
+```
+
+## Resampling and Model Testing
+### Build resamples 
+```{r}
+# Set the number of folds for cross-validation
+num_folds <- 10
+
+# Create resamples using vfold_cv for 10-fold cross-validation
+cv_splits <- vfold_cv(train_data, v = num_folds)
+
+# Check the structure of the resamples object
+str(cv_splits)
+
+# View the first few folds
+cv_splits$splits[1:3]
+```
+### Build 3 Candidate Models
+```{r}
+rf_model <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+lm_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+svm_model <- svm_rbf(cost = tune(), rbf_sigma = tune()) %>%
+  set_engine("kernlab") %>%
+  set_mode("regression")
+
+# Place them into a list for easy workflow
+model_list <- list(rf = rf_model, lm = lm_model, svm = svm_model)
+```
+
+#### Test the Models 
+```{r}
+# Use workflow_set to map models to recipe and resamples
+workflow_set <- workflow_set(
+  preproc = list(recipe_obj), 
+  models = model_list
+)
+
+# Apply resampling using workflow_map
+results <- workflow_map(workflow_set, resamples = cv_splits)
+
+# Visualize the results of the workflow set
+autoplot(results)
+```
+
+### Model Selection
+```{r}
+# View performance and select best model
+results
+# Based on metrics, pick one — for example, rf
+best_model <- "recipe_rf"
+```
+
+### Model Tuning 
+```{r}
+# Define tunable model (using Random Forest here as example)
+rf_tune_spec <- rand_forest(mtry = tune(), min_n = tune()) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+# Create workflow
+wf_tune <- workflow() %>%
+  add_recipe(recipe_obj) %>%
+  add_model(rf_tune_spec)
+```
+
+
+
+
+

@@ -75,12 +75,6 @@ num_folds <- 10
 
 # Create resamples using vfold_cv for 10-fold cross-validation
 cv_splits <- vfold_cv(train_data, v = num_folds)
-
-# Check the structure of the resamples object
-str(cv_splits)
-
-# View the first few folds
-cv_splits$splits[1:3]
 ```
 ### Build 3 Candidate Models
 ```{r}
@@ -104,12 +98,17 @@ model_list <- list(rf = rf_model, lm = lm_model, svm = svm_model)
 ```{r}
 # Use workflow_set to map models to recipe and resamples
 workflow_set <- workflow_set(
-  preproc = list(recipe_obj), 
+  preproc = list(camels = recipe_obj), 
   models = model_list
 )
 
 # Apply resampling using workflow_map
-results <- workflow_map(workflow_set, resamples = cv_splits)
+results <- workflow_map(
+  workflow_set, 
+  resamples = cv_splits,
+  verbose = TRUE,
+  control = control_resamples(save_pred = TRUE)
+)
 
 # Visualize the results of the workflow set
 autoplot(results)

@@ -1,0 +1,69 @@
+---
+title: "test"
+format: html
+---
+## Load in libraries 
+```{r setup, include=FALSE}
+# Load libraries
+library(tidyverse)
+library(tidymodels)
+library(powerjoin)
+library(glue)
+library(vip)
+library(baguette)
+library(xgboost)
+library(patchwork)
+```
+
+
+## Data Import/Tidy/Transform
+```{r}
+root <- 'https://gdex.ucar.edu/dataset/camels/file'
+```
+
+```{r}
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 'data/camels_attributes_v2.0.pdf')
+```
+
+```{r}
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+
+# Where the files live online ...
+remote_files  <- glue('{root}/camels_{types}.txt')
+# Where we want to download the data
+local_files   <- glue('data/camels_{types}.txt')
+
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+
+# Read and merge data
+camels <- map(local_files, read_delim, show_col_types = FALSE) %>%
+  power_full_join(camels ,by = 'gauge_id')
+```
+
+## Data Splitting 
+```{r}
+# Set a seed for reproducibility
+set.seed(123)
+
+# Splitting the data into training (75%) and testing (25%)
+camels_split <- initial_split(camels, prop = 0.75)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+
+# Create a 10-fold cross-validation
+camels_cv <- vfold_cv(camels_train, v = 10)
+
+# Check the data 
+glimpse(camels_train)
+glimpse(camels_test)
+```
+
+
+
+
+
+
+
+
+
+
